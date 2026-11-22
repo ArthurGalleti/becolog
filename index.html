@@ -1,0 +1,1093 @@
+
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <meta name="description" content="Becolog — plataforma inteligente para gerenciamento e acompanhamento de entregas.">
+    <meta name="theme-color" content="#16784B">
+
+    <title>Becolog — Entregas Inteligentes</title>
+
+    <!-- Ícone e estilos -->
+    <link rel="icon" href="/icons/logo.png" type="image/png">
+    <link rel="stylesheet" href="./style.css">
+
+    <style>
+        [hidden] {
+            display: none !important;
+        }
+
+        button,
+        input,
+        textarea {
+            font: inherit;
+        }
+
+        button:focus-visible,
+        input:focus-visible,
+        textarea:focus-visible,
+        a:focus-visible {
+            outline: 3px solid #16784B;
+            outline-offset: 3px;
+        }
+
+        /* BOTÃO DE LEITURA DE TELA */
+        .speech-toggle {
+            position: fixed;
+            right: 20px;
+            bottom: 20px;
+            z-index: 10000;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            padding: 13px 20px;
+            border: none;
+            border-radius: 12px;
+            background: #16784B;
+            color: #fff;
+            font-weight: 700;
+            font-size: 14px;
+            cursor: pointer;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+            transition: background 0.2s ease, transform 0.2s ease;
+        }
+
+        .speech-toggle:hover {
+            background: #105c38;
+            transform: translateY(-2px);
+        }
+
+        .speech-toggle.active {
+            background: #a83232;
+        }
+
+        .speech-toggle.active:hover {
+            background: #852525;
+        }
+
+        .speech-toggle:focus-visible {
+            outline: 3px solid #16784B;
+            outline-offset: 4px;
+        }
+
+        .chat-list-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 16px;
+            padding: 20px;
+        }
+
+        .chat-list-info {
+            min-width: 0;
+            flex: 1;
+        }
+
+        .chat-list-info h3 {
+            margin-top: 0;
+        }
+
+        .chat-list-info p {
+            overflow-wrap: anywhere;
+        }
+
+        .chat-container {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+            width: 100%;
+            min-height: 65vh;
+            padding: 24px;
+        }
+
+        .chat-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 16px;
+            padding-bottom: 16px;
+            border-bottom: 1px solid rgba(0,0,0,.12);
+        }
+
+        .chat-header h2 {
+            margin: 0 0 6px;
+        }
+
+        .chat-header p {
+            margin: 0;
+        }
+
+        .chat-messages {
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+            flex: 1;
+            min-height: 300px;
+            max-height: 55vh;
+            overflow-y: auto;
+            padding: 16px;
+            border-radius: 12px;
+            background: rgba(0,0,0,.035);
+            overscroll-behavior: contain;
+        }
+
+        .chat-empty {
+            margin: auto;
+            text-align: center;
+        }
+
+        .chat-message {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            max-width: 80%;
+            padding: 12px 16px;
+            border-radius: 14px;
+            overflow-wrap: anywhere;
+        }
+
+        .chat-message.mine {
+            align-self: flex-end;
+            background: #16784B;
+            color: #fff;
+        }
+
+        .chat-message.theirs {
+            align-self: flex-start;
+            background: #e8eee9;
+            color: #19382a;
+        }
+
+        .chat-message-author {
+            font-size: .8rem;
+            font-weight: 700;
+        }
+
+        .chat-message p {
+            margin: 0;
+            white-space: pre-wrap;
+        }
+
+        .chat-message time {
+            align-self: flex-end;
+            font-size: .7rem;
+            opacity: .8;
+        }
+
+        .chat-form {
+            display: flex;
+            align-items: flex-end;
+            gap: 12px;
+        }
+
+        .chat-input-wrapper {
+            display: flex;
+            flex-direction: column;
+            flex: 1;
+            min-width: 0;
+            gap: 6px;
+        }
+
+        .chat-form textarea {
+            width: 100%;
+            min-height: 52px;
+            resize: vertical;
+        }
+
+        .chat-form button {
+            min-height: 48px;
+        }
+
+        .skip-link {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            z-index: 9999;
+            padding: 12px 16px;
+            background: #fff;
+            color: #19382a;
+            border: 2px solid #16784B;
+            border-radius: 8px;
+            transform: translateY(-150%);
+        }
+
+        .skip-link:focus {
+            transform: translateY(0);
+        }
+
+        @media (max-width: 600px) {
+            .chat-container {
+                padding: 14px;
+            }
+
+            .chat-form {
+                flex-direction: column;
+                align-items: stretch;
+            }
+
+            .chat-form button {
+                width: 100%;
+            }
+
+            .chat-message {
+                max-width: 95%;
+            }
+
+            .speech-toggle {
+                right: 12px;
+                bottom: 12px;
+                padding: 12px 15px;
+                font-size: 13px;
+            }
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+            *,
+            *::before,
+            *::after {
+                scroll-behavior: auto !important;
+                animation-duration: 0.01ms !important;
+                animation-iteration-count: 1 !important;
+                transition-duration: 0.01ms !important;
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+    <!-- LINK DE ACESSIBILIDADE -->
+    <a href="#view-login" class="skip-link" id="skip-link">
+        Pular para o conteúdo principal
+    </a>
+
+    <!-- LEITOR DE TELA PARA ANÚNCIOS ACESSÍVEIS -->
+    <div
+        id="sr-announcer"
+        class="sr-only"
+        aria-live="polite"
+        aria-atomic="true">
+    </div>
+
+    <!-- BOTÃO DE ATIVAR E DESATIVAR LEITURA -->
+    <button
+        type="button"
+        id="speech-toggle"
+        class="speech-toggle"
+        aria-pressed="false"
+        aria-label="Ativar leitura de tela">
+        🔊 Ativar leitura
+    </button>
+
+    <!-- ELEMENTOS VISUAIS DE FUNDO -->
+    <div class="bg-shapes" aria-hidden="true">
+        <div class="blob blob-1"></div>
+        <div class="blob blob-2"></div>
+    </div>
+
+    <!-- LOGIN E CADASTRO -->
+
+    <main
+        id="view-login"
+        class="view active"
+        aria-labelledby="login-heading"
+        tabindex="-1">
+
+        <div class="glass-panel login-card hover-3d">
+
+            <div class="logo">
+                <img src="/icons/logo.png" width="150" alt="Logo Becolog">
+            </div>
+
+            <h1 id="login-heading" class="sr-only">
+                Acesso à Plataforma Becolog
+            </h1>
+
+            <p class="subtitle-text">
+                Entregas inteligentes para sua comunidade
+            </p>
+
+            <div
+                class="role-selector"
+                role="tablist"
+                aria-label="Modo de autenticação">
+
+                <button
+                    type="button"
+                    role="tab"
+                    id="tab-login"
+                    aria-selected="true"
+                    aria-controls="login-form"
+                    class="active-role"
+                    onclick="showAuthForm('login')">
+                    Entrar
+                </button>
+
+                <button
+                    type="button"
+                    role="tab"
+                    id="tab-register"
+                    aria-selected="false"
+                    aria-controls="register-form"
+                    onclick="showAuthForm('register')">
+                    Criar conta
+                </button>
+
+            </div>
+
+            <div
+                id="auth-feedback"
+                class="feedback-banner"
+                role="alert"
+                aria-live="assertive"
+                aria-atomic="true"
+                hidden>
+            </div>
+
+            <!-- LOGIN -->
+
+            <form
+                id="login-form"
+                role="tabpanel"
+                aria-labelledby="tab-login"
+                onsubmit="event.preventDefault(); doLogin();"
+                novalidate>
+
+                <fieldset class="role-fieldset">
+
+                    <legend class="sr-only">
+                        Selecione o perfil de acesso
+                    </legend>
+
+                    <div
+                        class="role-selector"
+                        role="group"
+                        aria-label="Perfil de acesso">
+
+                        <button
+                            type="button"
+                            class="active-role"
+                            id="btn-vendor"
+                            aria-pressed="true"
+                            onclick="selectRole('vendor')">
+                            Empresa
+                        </button>
+
+                        <button
+                            type="button"
+                            id="btn-driver"
+                            aria-pressed="false"
+                            onclick="selectRole('driver')">
+                            Entregador
+                        </button>
+
+                    </div>
+
+                </fieldset>
+
+                <div class="form-group">
+                    <label for="login-email">
+                        E-mail de acesso
+                        <span aria-hidden="true">*</span>
+                    </label>
+
+                    <input
+                        type="email"
+                        id="login-email"
+                        name="email"
+                        autocomplete="username"
+                        placeholder="seu@email.com"
+                        required
+                        aria-required="true">
+                </div>
+
+                <div class="form-group">
+                    <label for="login-password">
+                        Senha
+                        <span aria-hidden="true">*</span>
+                    </label>
+
+                    <input
+                        type="password"
+                        id="login-password"
+                        name="password"
+                        autocomplete="current-password"
+                        placeholder="Digite sua senha"
+                        required
+                        aria-required="true">
+                </div>
+
+                <button type="submit" class="btn-primary btn-full">
+                    ACESSAR PLATAFORMA
+                </button>
+
+            </form>
+
+            <!-- CADASTRO -->
+
+            <form
+                id="register-form"
+                role="tabpanel"
+                aria-labelledby="tab-register"
+                onsubmit="event.preventDefault(); doRegister();"
+                hidden
+                novalidate>
+
+                <fieldset class="role-fieldset">
+
+                    <legend class="sr-only">
+                        Selecione o perfil de cadastro
+                    </legend>
+
+                    <div
+                        class="role-selector"
+                        role="group"
+                        aria-label="Perfil de cadastro">
+
+                        <button
+                            type="button"
+                            class="active-role"
+                            id="register-vendor"
+                            aria-pressed="true"
+                            onclick="selectRegisterRole('vendor')">
+                            Empresa
+                        </button>
+
+                        <button
+                            type="button"
+                            id="register-driver"
+                            aria-pressed="false"
+                            onclick="selectRegisterRole('driver')">
+                            Entregador
+                        </button>
+
+                    </div>
+
+                </fieldset>
+
+                <div class="form-group">
+                    <label for="register-name">
+                        Nome completo
+                        <span aria-hidden="true">*</span>
+                    </label>
+
+                    <input
+                        type="text"
+                        id="register-name"
+                        name="name"
+                        autocomplete="name"
+                        placeholder="Digite seu nome"
+                        required
+                        aria-required="true">
+                </div>
+
+                <div class="form-group">
+                    <label for="register-email">
+                        E-mail
+                        <span aria-hidden="true">*</span>
+                    </label>
+
+                    <input
+                        type="email"
+                        id="register-email"
+                        name="email"
+                        autocomplete="email"
+                        placeholder="seu@email.com"
+                        required
+                        aria-required="true">
+                </div>
+
+                <div class="form-group">
+                    <label for="register-password">
+                        Senha
+                        <span aria-hidden="true">*</span>
+                    </label>
+
+                    <input
+                        type="password"
+                        id="register-password"
+                        name="password"
+                        autocomplete="new-password"
+                        placeholder="Mínimo de 6 caracteres"
+                        required
+                        aria-required="true">
+                </div>
+
+                <div class="form-group">
+                    <label for="register-confirm-password">
+                        Confirmar senha
+                        <span aria-hidden="true">*</span>
+                    </label>
+
+                    <input
+                        type="password"
+                        id="register-confirm-password"
+                        name="confirm-password"
+                        autocomplete="new-password"
+                        placeholder="Digite a senha novamente"
+                        required
+                        aria-required="true">
+                </div>
+
+                <button type="submit" class="btn-primary btn-full">
+                    CRIAR MINHA CONTA
+                </button>
+
+            </form>
+
+        </div>
+
+    </main>
+
+    <!-- APLICAÇÃO -->
+
+    <div id="view-app" class="app-layout" hidden>
+
+        <!-- MENU LATERAL -->
+
+        <aside
+            class="glass-panel sidebar"
+            id="main-sidebar"
+            aria-label="Menu lateral">
+
+            <div class="logo sidebar-logo">
+                <img src="/icons/logo.png" width="120" alt="Logo Becolog">
+            </div>
+
+            <nav aria-label="Navegação principal">
+                <ul class="nav-menu" id="nav-list">
+                    <!-- Gerado pelo script.js -->
+                </ul>
+            </nav>
+
+        </aside>
+
+        <button
+            type="button"
+            class="sidebar-backdrop"
+            id="sidebar-backdrop"
+            aria-label="Fechar menu"
+            onclick="closeMobileMenu()"
+            hidden>
+        </button>
+
+        <!-- CONTEÚDO PRINCIPAL -->
+
+        <main id="main-content" class="main-content" tabindex="-1">
+
+            <header class="top-header">
+
+                <div class="header-left">
+
+                    <button
+                        type="button"
+                        class="menu-toggle"
+                        id="menu-toggle-btn"
+                        aria-label="Abrir menu de navegação"
+                        aria-expanded="false"
+                        aria-controls="main-sidebar"
+                        onclick="toggleMobileMenu()">
+                        <span aria-hidden="true">☰</span>
+                    </button>
+
+                    <div>
+                        <h1 id="header-title">Bem-vindo(a)</h1>
+                        <p id="header-subtitle">
+                            Gerencie suas entregas de forma rápida.
+                        </p>
+                    </div>
+
+                </div>
+
+                <div class="user-profile">
+
+                    <span
+                        id="user-name"
+                        class="user-name-label"
+                        hidden>
+                    </span>
+
+                    <div class="avatar" aria-hidden="true"></div>
+
+                </div>
+
+            </header>
+
+            <div
+                id="app-feedback"
+                class="feedback-banner"
+                role="status"
+                aria-live="polite"
+                aria-atomic="true"
+                hidden>
+            </div>
+
+            <!-- PAINEL DA EMPRESA -->
+
+            <section
+                id="sub-vendor-dash"
+                class="view"
+                aria-labelledby="vendor-dash-heading"
+                hidden>
+
+                <h2 id="vendor-dash-heading" class="sr-only">
+                    Resumo de entregas
+                </h2>
+
+                <div
+                    class="stats-grid"
+                    role="region"
+                    aria-label="Indicadores de entregas">
+
+                    <div class="glass-panel stat-card hover-3d">
+                        <p class="stat-label" id="label-stat-pending">
+                            Aguardando Entregador
+                        </p>
+
+                        <h3 id="stat-pending" aria-labelledby="label-stat-pending">
+                            0
+                        </h3>
+                    </div>
+
+                    <div class="glass-panel stat-card hover-3d">
+                        <p class="stat-label" id="label-stat-transit">
+                            Em Trânsito
+                        </p>
+
+                        <h3 id="stat-transit" aria-labelledby="label-stat-transit">
+                            0
+                        </h3>
+                    </div>
+
+                    <div class="glass-panel stat-card hover-3d">
+                        <p class="stat-label" id="label-stat-completed">
+                            Concluídas Hoje
+                        </p>
+
+                        <h3 id="stat-completed" aria-labelledby="label-stat-completed">
+                            0
+                        </h3>
+                    </div>
+
+                </div>
+
+                <div class="section-header-bar">
+                    <h2 class="section-title">Entregas Ativas</h2>
+
+                    <button
+                        type="button"
+                        class="btn-primary"
+                        onclick="navigateApp('sub-vendor-new')">
+                        + Nova Entrega
+                    </button>
+                </div>
+
+                <div
+                    class="delivery-list"
+                    id="vendor-delivery-list"
+                    aria-live="polite"
+                    aria-relevant="additions text">
+
+                    <article class="glass-panel delivery-item">
+                        <div class="del-info">
+                            <h3>Nenhuma entrega cadastrada</h3>
+                            <p>
+                                Suas solicitações aparecerão aqui quando forem cadastradas.
+                            </p>
+                        </div>
+                    </article>
+
+                </div>
+
+            </section>
+
+            <!-- NOVA ENTREGA -->
+
+            <section
+                id="sub-vendor-new"
+                class="view"
+                aria-labelledby="new-delivery-heading"
+                hidden>
+
+                <form
+                    id="new-delivery-form"
+                    onsubmit="event.preventDefault(); publishDelivery();"
+                    novalidate>
+
+                    <div class="form-grid glass-panel">
+
+                        <div class="full-width">
+                            <h2 id="new-delivery-heading" class="form-section-title">
+                                Detalhes da Solicitação
+                            </h2>
+
+                            <p class="required-note">
+                                Campos marcados com
+                                <span aria-hidden="true">*</span>
+                                são obrigatórios.
+                            </p>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="pickup-address">
+                                Endereço de Retirada
+                                <span aria-hidden="true">*</span>
+                            </label>
+
+                            <input
+                                type="text"
+                                id="pickup-address"
+                                name="pickup"
+                                autocomplete="street-address"
+                                placeholder="Endereço completo"
+                                required
+                                aria-required="true">
+                        </div>
+
+                        <div class="form-group">
+                            <label for="delivery-address">
+                                Endereço de Destino
+                                <span aria-hidden="true">*</span>
+                            </label>
+
+                            <input
+                                type="text"
+                                id="delivery-address"
+                                name="destination"
+                                placeholder="Endereço completo"
+                                required
+                                aria-required="true">
+                        </div>
+
+                        <div class="form-group">
+                            <label for="client-name">
+                                Nome do Cliente / Recebedor
+                                <span aria-hidden="true">*</span>
+                            </label>
+
+                            <input
+                                type="text"
+                                id="client-name"
+                                name="client"
+                                autocomplete="name"
+                                placeholder="Nome completo"
+                                required
+                                aria-required="true">
+                        </div>
+
+                        <div class="form-group">
+                            <label for="client-phone">
+                                Telefone do Cliente
+                                <span aria-hidden="true">*</span>
+                            </label>
+
+                            <input
+                                type="tel"
+                                id="client-phone"
+                                name="phone"
+                                autocomplete="tel"
+                                placeholder="(00) 00000-0000"
+                                required
+                                aria-required="true">
+                        </div>
+
+                        <div class="full-width form-group">
+                            <label for="delivery-instructions">
+                                Instruções Especiais (Opcional)
+                            </label>
+
+                            <textarea
+                                id="delivery-instructions"
+                                name="instructions"
+                                rows="3"
+                                placeholder="Informações adicionais sobre a entrega."></textarea>
+                        </div>
+
+                    </div>
+
+                    <div class="actions">
+
+                        <button
+                            type="button"
+                            class="btn-glass"
+                            onclick="navigateApp('sub-vendor-dash')">
+                            Cancelar
+                        </button>
+
+                        <button type="submit" class="btn-primary">
+                            Publicar Chamado
+                        </button>
+
+                    </div>
+
+                </form>
+
+            </section>
+
+            <!-- ACOMPANHAMENTO -->
+
+            <section
+                id="sub-vendor-track"
+                class="view"
+                aria-labelledby="track-heading"
+                hidden>
+
+                <h2 id="track-heading" class="sr-only">
+                    Acompanhamento de Entrega
+                </h2>
+
+                <div class="glass-panel stepper-container">
+                    <div class="stepper" role="status" aria-live="polite">
+                        <p class="empty-track-msg">
+                            Nenhuma entrega selecionada para acompanhamento.
+                        </p>
+                    </div>
+                </div>
+
+                <div
+                    class="map-glass"
+                    role="region"
+                    aria-label="Mapa de acompanhamento da entrega">
+
+                    <span class="map-status-badge">
+                        Aguardando localização
+                    </span>
+
+                </div>
+
+                <div class="actions">
+                    <button
+                        type="button"
+                        class="btn-primary"
+                        onclick="navigateApp('sub-vendor-dash')">
+                        Voltar ao Painel
+                    </button>
+                </div>
+
+            </section>
+
+            <!-- PAINEL DO ENTREGADOR -->
+
+            <section
+                id="sub-driver-dash"
+                class="view"
+                aria-labelledby="driver-dash-heading"
+                hidden>
+
+                <h2 id="driver-dash-heading" class="sr-only">
+                    Entregas disponíveis e atribuídas
+                </h2>
+
+                <div
+                    class="delivery-list"
+                    id="driver-delivery-list"
+                    aria-live="polite"
+                    aria-relevant="additions text">
+
+                    <article class="glass-panel delivery-item">
+                        <div class="del-info">
+                            <h3>Nenhuma entrega disponível</h3>
+                            <p>
+                                Novas solicitações aparecerão aqui quando estiverem disponíveis.
+                            </p>
+                        </div>
+                    </article>
+
+                </div>
+
+            </section>
+
+            <!-- HISTÓRICO -->
+
+            <section
+                id="sub-history"
+                class="view"
+                aria-labelledby="history-heading"
+                hidden>
+
+                <div class="section-header-bar">
+                    <h2 id="history-heading" class="section-title">
+                        Histórico de Entregas
+                    </h2>
+                </div>
+
+                <div
+                    id="history-delivery-list"
+                    class="delivery-list"
+                    aria-live="polite"
+                    aria-relevant="additions text">
+
+                    <article class="glass-panel delivery-item">
+                        <div class="del-info">
+                            <h3>Nenhuma entrega no histórico</h3>
+                            <p>
+                                As entregas concluídas aparecerão aqui.
+                            </p>
+                        </div>
+                    </article>
+
+                </div>
+
+            </section>
+
+            <!-- LISTA DE CONVERSAS -->
+
+            <section
+                id="sub-chat-list"
+                class="view"
+                aria-labelledby="chat-list-heading"
+                hidden>
+
+                <div class="section-header-bar">
+                    <h2 id="chat-list-heading" class="section-title">
+                        Minhas conversas
+                    </h2>
+                </div>
+
+                <div
+                    id="chat-list"
+                    class="delivery-list"
+                    aria-live="polite"
+                    aria-relevant="additions text">
+
+                    <p>Suas conversas aparecerão aqui.</p>
+
+                </div>
+
+            </section>
+
+            <!-- CHAT DA ENTREGA -->
+
+            <section
+                id="sub-chat"
+                class="view chat-view"
+                aria-labelledby="chat-title"
+                hidden>
+
+                <div class="glass-panel chat-container">
+
+                    <header class="chat-header">
+
+                        <div class="chat-header-info">
+                            <h2 id="chat-title" tabindex="-1">
+                                Conversa da entrega
+                            </h2>
+
+                            <p id="chat-subtitle">
+                                Conversa entre empresa e entregador
+                            </p>
+                        </div>
+
+                        <button
+                            type="button"
+                            class="btn-glass"
+                            onclick="fecharChat()">
+                            Voltar
+                        </button>
+
+                    </header>
+
+                    <div
+                        id="chat-messages"
+                        class="chat-messages"
+                        role="log"
+                        aria-label="Histórico de mensagens"
+                        aria-live="polite"
+                        aria-relevant="additions">
+
+                        <p class="chat-empty">
+                            Selecione uma entrega para iniciar a conversa.
+                        </p>
+
+                    </div>
+
+                    <form id="chat-form" class="chat-form">
+
+                        <div class="chat-input-wrapper">
+
+                            <label for="chat-input" class="sr-only">
+                                Digite sua mensagem
+                            </label>
+
+                            <textarea
+                                id="chat-input"
+                                name="message"
+                                rows="2"
+                                maxlength="2000"
+                                placeholder="Digite sua mensagem..."
+                                aria-describedby="chat-input-hint"
+                                required></textarea>
+
+                            <small id="chat-input-hint" class="input-hint">
+                                Máximo de 2.000 caracteres.
+                            </small>
+
+                        </div>
+
+                        <button
+                            type="submit"
+                            id="chat-send"
+                            class="btn-primary">
+                            Enviar mensagem
+                        </button>
+
+                    </form>
+
+                </div>
+
+            </section>
+
+        </main>
+
+    </div>
+
+    <!-- FIREBASE -->
+
+    <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
+
+    <!-- CONFIGURAÇÃO DO FIREBASE -->
+
+    <script src="./firebase.js"></script>
+
+    <!-- SCRIPT PRINCIPAL -->
+
+    <script src="./script.js"></script>
+
+    <!-- LEITURA DE TELA -->
+
+    <script src="./leituraDeTela.js"></script>
+
+    <!-- AJUSTE DO LINK DE ACESSIBILIDADE -->
+
+    <script>
+        const skipLink = document.getElementById('skip-link');
+
+        if (skipLink) {
+            const observer = new MutationObserver(() => {
+                const app = document.getElementById('view-app');
+                const login = document.getElementById('view-login');
+
+                if (app && !app.hidden) {
+                    skipLink.href = '#main-content';
+                } else if (login && !login.hidden) {
+                    skipLink.href = '#view-login';
+                }
+            });
+
+            observer.observe(document.body, {
+                attributes: true,
+                subtree: true,
+                attributeFilter: ['hidden', 'class']
+            });
+        }
+    </script>
+
+</body>
+</html>
