@@ -10,8 +10,18 @@
 
     <title>Becolog — Entregas Inteligentes</title>
 
+    <!-- Leaflet: biblioteca do mapa -->
+    <link
+        rel="stylesheet"
+        href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        crossorigin="">
+
     <!-- Ícone e estilos -->
-    <link rel="icon" href="/icons/logo.png" type="image/png">
+    <link
+        rel="icon"
+        href="https://github.com/ArthurGalleti/becolog/blob/main/icons/logo.png?raw=true"
+        type="image/png">
+
     <link rel="stylesheet" href="./style.css">
 
     <style>
@@ -73,6 +83,7 @@
             outline-offset: 4px;
         }
 
+        /* CHAT */
         .chat-list-item {
             display: flex;
             justify-content: space-between;
@@ -203,6 +214,7 @@
             min-height: 48px;
         }
 
+        /* LINK DE ACESSIBILIDADE */
         .skip-link {
             position: absolute;
             top: 10px;
@@ -218,6 +230,90 @@
 
         .skip-link:focus {
             transform: translateY(0);
+        }
+
+        /* MAPA DE ACOMPANHAMENTO */
+        .tracking-map-container {
+            width: 100%;
+            padding: 24px;
+            margin-bottom: 28px;
+        }
+
+        .tracking-map-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 16px;
+            margin-bottom: 18px;
+        }
+
+        .tracking-map-header h2 {
+            margin: 0 0 6px;
+            font-size: 21px;
+        }
+
+        .tracking-map-header p {
+            margin: 0;
+            color: var(--text-muted);
+            font-size: 14px;
+        }
+
+        .map-status-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 13px;
+            border-radius: 20px;
+            background: #e6f4eb;
+            color: #16784B;
+            font-size: 13px;
+            font-weight: 700;
+        }
+
+        #delivery-map {
+            width: 100%;
+            height: 420px;
+            border-radius: 16px;
+            overflow: hidden;
+            border: 1px solid var(--glass-border);
+            z-index: 1;
+            background: #e8eee9;
+        }
+
+        .tracking-map-info {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 16px;
+            margin-top: 20px;
+        }
+
+        .tracking-location-info {
+            display: flex;
+            align-items: flex-start;
+            gap: 12px;
+            min-width: 0;
+            padding: 15px;
+            border-radius: 12px;
+            background: rgba(22, 120, 75, 0.06);
+        }
+
+        .tracking-location-icon {
+            font-size: 22px;
+            flex-shrink: 0;
+        }
+
+        .tracking-location-info strong {
+            display: block;
+            margin-bottom: 5px;
+            color: var(--text-color, #19382a);
+        }
+
+        .tracking-location-info p {
+            margin: 0;
+            color: var(--text-muted);
+            font-size: 13px;
+            overflow-wrap: anywhere;
         }
 
         @media (max-width: 600px) {
@@ -243,6 +339,23 @@
                 bottom: 12px;
                 padding: 12px 15px;
                 font-size: 13px;
+            }
+
+            .tracking-map-container {
+                padding: 16px;
+            }
+
+            .tracking-map-header {
+                align-items: flex-start;
+                flex-direction: column;
+            }
+
+            #delivery-map {
+                height: 300px;
+            }
+
+            .tracking-map-info {
+                grid-template-columns: 1fr;
             }
         }
 
@@ -291,7 +404,6 @@
     </div>
 
     <!-- LOGIN E CADASTRO -->
-
     <main
         id="view-login"
         class="view active"
@@ -301,7 +413,10 @@
         <div class="glass-panel login-card hover-3d">
 
             <div class="logo">
-                <img src="/icons/logo.png" width="150" alt="Logo Becolog">
+                <img
+                    src="https://github.com/ArthurGalleti/becolog/blob/main/icons/logo.png?raw=true"
+                    width="150"
+                    alt="Logo Becolog">
             </div>
 
             <h1 id="login-heading" class="sr-only">
@@ -337,7 +452,6 @@
                     onclick="showAuthForm('register')">
                     Criar conta
                 </button>
-
             </div>
 
             <div
@@ -350,7 +464,6 @@
             </div>
 
             <!-- LOGIN -->
-
             <form
                 id="login-form"
                 role="tabpanel"
@@ -359,7 +472,6 @@
                 novalidate>
 
                 <fieldset class="role-fieldset">
-
                     <legend class="sr-only">
                         Selecione o perfil de acesso
                     </legend>
@@ -385,9 +497,7 @@
                             onclick="selectRole('driver')">
                             Entregador
                         </button>
-
                     </div>
-
                 </fieldset>
 
                 <div class="form-group">
@@ -425,11 +535,9 @@
                 <button type="submit" class="btn-primary btn-full">
                     ACESSAR PLATAFORMA
                 </button>
-
             </form>
 
             <!-- CADASTRO -->
-
             <form
                 id="register-form"
                 role="tabpanel"
@@ -439,7 +547,6 @@
                 novalidate>
 
                 <fieldset class="role-fieldset">
-
                     <legend class="sr-only">
                         Selecione o perfil de cadastro
                     </legend>
@@ -465,9 +572,7 @@
                             onclick="selectRegisterRole('driver')">
                             Entregador
                         </button>
-
                     </div>
-
                 </fieldset>
 
                 <div class="form-group">
@@ -537,26 +642,24 @@
                 <button type="submit" class="btn-primary btn-full">
                     CRIAR MINHA CONTA
                 </button>
-
             </form>
-
         </div>
-
     </main>
 
     <!-- APLICAÇÃO -->
-
     <div id="view-app" class="app-layout" hidden>
 
         <!-- MENU LATERAL -->
-
         <aside
             class="glass-panel sidebar"
             id="main-sidebar"
             aria-label="Menu lateral">
 
             <div class="logo sidebar-logo">
-                <img src="/icons/logo.png" width="120" alt="Logo Becolog">
+                <img
+                    src="https://github.com/ArthurGalleti/becolog/blob/main/icons/logo.png?raw=true"
+                    width="120"
+                    alt="Logo Becolog">
             </div>
 
             <nav aria-label="Navegação principal">
@@ -564,7 +667,6 @@
                     <!-- Gerado pelo script.js -->
                 </ul>
             </nav>
-
         </aside>
 
         <button
@@ -577,11 +679,9 @@
         </button>
 
         <!-- CONTEÚDO PRINCIPAL -->
-
         <main id="main-content" class="main-content" tabindex="-1">
 
             <header class="top-header">
-
                 <div class="header-left">
 
                     <button
@@ -601,11 +701,9 @@
                             Gerencie suas entregas de forma rápida.
                         </p>
                     </div>
-
                 </div>
 
                 <div class="user-profile">
-
                     <span
                         id="user-name"
                         class="user-name-label"
@@ -613,9 +711,7 @@
                     </span>
 
                     <div class="avatar" aria-hidden="true"></div>
-
                 </div>
-
             </header>
 
             <div
@@ -628,7 +724,6 @@
             </div>
 
             <!-- PAINEL DA EMPRESA -->
-
             <section
                 id="sub-vendor-dash"
                 class="view"
@@ -673,7 +768,6 @@
                             0
                         </h3>
                     </div>
-
                 </div>
 
                 <div class="section-header-bar">
@@ -701,13 +795,10 @@
                             </p>
                         </div>
                     </article>
-
                 </div>
-
             </section>
 
             <!-- NOVA ENTREGA -->
-
             <section
                 id="sub-vendor-new"
                 class="view"
@@ -807,11 +898,9 @@
                                 rows="3"
                                 placeholder="Informações adicionais sobre a entrega."></textarea>
                         </div>
-
                     </div>
 
                     <div class="actions">
-
                         <button
                             type="button"
                             class="btn-glass"
@@ -822,15 +911,11 @@
                         <button type="submit" class="btn-primary">
                             Publicar Chamado
                         </button>
-
                     </div>
-
                 </form>
-
             </section>
 
             <!-- ACOMPANHAMENTO -->
-
             <section
                 id="sub-vendor-track"
                 class="view"
@@ -841,6 +926,7 @@
                     Acompanhamento de Entrega
                 </h2>
 
+                <!-- ETAPAS DA ENTREGA -->
                 <div class="glass-panel stepper-container">
                     <div class="stepper" role="status" aria-live="polite">
                         <p class="empty-track-msg">
@@ -849,15 +935,61 @@
                     </div>
                 </div>
 
-                <div
-                    class="map-glass"
-                    role="region"
-                    aria-label="Mapa de acompanhamento da entrega">
+                <!-- MAPA -->
+                <div class="glass-panel tracking-map-container">
 
-                    <span class="map-status-badge">
-                        Aguardando localização
-                    </span>
+                    <div class="tracking-map-header">
+                        <div>
+                            <h2>Localização da entrega</h2>
+                            <p>
+                                Acompanhe a localização atual do entregador
+                                e o destino final.
+                            </p>
+                        </div>
 
+                        <span
+                            class="map-status-badge"
+                            id="map-status-badge">
+                            Aguardando localização
+                        </span>
+                    </div>
+
+                    <!-- MAPA INTERATIVO -->
+                    <div
+                        id="delivery-map"
+                        role="region"
+                        aria-label="Mapa interativo com a localização do entregador e o destino da entrega">
+                    </div>
+
+                    <!-- INFORMAÇÕES DA ROTA -->
+                    <div class="tracking-map-info">
+
+                        <div class="tracking-location-info">
+                            <span class="tracking-location-icon" aria-hidden="true">
+                                🛵
+                            </span>
+
+                            <div>
+                                <strong>Localização atual</strong>
+                                <p id="tracking-current-location">
+                                    Aguardando localização do entregador
+                                </p>
+                            </div>
+                        </div>
+
+                        <div class="tracking-location-info">
+                            <span class="tracking-location-icon" aria-hidden="true">
+                                📍
+                            </span>
+
+                            <div>
+                                <strong>Destino final</strong>
+                                <p id="tracking-destination">
+                                    Endereço do cliente
+                                </p>
+                            </div>
+                        </div>
+                    </div>
                 </div>
 
                 <div class="actions">
@@ -868,11 +1000,9 @@
                         Voltar ao Painel
                     </button>
                 </div>
-
             </section>
 
             <!-- PAINEL DO ENTREGADOR -->
-
             <section
                 id="sub-driver-dash"
                 class="view"
@@ -897,13 +1027,10 @@
                             </p>
                         </div>
                     </article>
-
                 </div>
-
             </section>
 
             <!-- HISTÓRICO -->
-
             <section
                 id="sub-history"
                 class="view"
@@ -930,13 +1057,10 @@
                             </p>
                         </div>
                     </article>
-
                 </div>
-
             </section>
 
             <!-- LISTA DE CONVERSAS -->
-
             <section
                 id="sub-chat-list"
                 class="view"
@@ -956,13 +1080,10 @@
                     aria-relevant="additions text">
 
                     <p>Suas conversas aparecerão aqui.</p>
-
                 </div>
-
             </section>
 
             <!-- CHAT DA ENTREGA -->
-
             <section
                 id="sub-chat"
                 class="view chat-view"
@@ -972,7 +1093,6 @@
                 <div class="glass-panel chat-container">
 
                     <header class="chat-header">
-
                         <div class="chat-header-info">
                             <h2 id="chat-title" tabindex="-1">
                                 Conversa da entrega
@@ -989,7 +1109,6 @@
                             onclick="fecharChat()">
                             Voltar
                         </button>
-
                     </header>
 
                     <div
@@ -1003,13 +1122,10 @@
                         <p class="chat-empty">
                             Selecione uma entrega para iniciar a conversa.
                         </p>
-
                     </div>
 
                     <form id="chat-form" class="chat-form">
-
                         <div class="chat-input-wrapper">
-
                             <label for="chat-input" class="sr-only">
                                 Digite sua mensagem
                             </label>
@@ -1026,7 +1142,6 @@
                             <small id="chat-input-hint" class="input-hint">
                                 Máximo de 2.000 caracteres.
                             </small>
-
                         </div>
 
                         <button
@@ -1035,37 +1150,34 @@
                             class="btn-primary">
                             Enviar mensagem
                         </button>
-
                     </form>
-
                 </div>
-
             </section>
 
         </main>
-
     </div>
 
     <!-- FIREBASE -->
-
     <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
 
-    <!-- CONFIGURAÇÃO DO FIREBASE -->
+    <!-- LEAFLET -->
+    <script
+        src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        crossorigin="">
+    </script>
 
+    <!-- CONFIGURAÇÃO DO FIREBASE -->
     <script src="./firebase.js"></script>
 
     <!-- SCRIPT PRINCIPAL -->
-
     <script src="./script.js"></script>
 
     <!-- LEITURA DE TELA -->
-
     <script src="./leituraDeTela.js"></script>
 
     <!-- AJUSTE DO LINK DE ACESSIBILIDADE -->
-
     <script>
         const skipLink = document.getElementById('skip-link');
 

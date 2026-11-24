@@ -5,6 +5,7 @@
    Acessibilidade
    Entregas em tempo real
    Identificação do entregador
+   Acompanhamento com mini mapa (Leaflet)
    Histórico
    Chat
 ========================================= */
@@ -29,6 +30,15 @@ let chatReturnView = null;
 
 let chatSending = false;
 let deliveryActionPending = false;
+
+let entregasEmpresaAtuais = [];
+let entregaAcompanhamentoId = null;
+
+const miniMapsInstances = new Map();
+const geocodeCache = new Map();
+
+let authStateInitialized = false;
+let trackingRenderToken = 0;
 
 // =====================================
 // UTILITÁRIOS
@@ -125,6 +135,8 @@ function formatarStatus(status) {
         pendente: 'Aguardando entregador',
         aceita: 'Aceita',
         em_andamento: 'Em trânsito',
+        em_transito: 'Em trânsito',
+        coletado: 'Coletada',
         concluida: 'Concluída',
         cancelada: 'Cancelada'
     };
@@ -151,6 +163,11 @@ function pararListener(listener) {
     if (typeof listener === 'function') {
         listener();
     }
+}
+
+function isEntregaEmAndamento(status) {
+    const st = normalizarStatus(status);
+    return st !== 'concluida' && st !== 'cancelada';
 }
 
 // =====================================
@@ -435,7 +452,7 @@ function abrirAplicacao(userData) {
                 </button>
             </li>
         `;
-        
+
         navigateApp('sub-driver-dash');
     }
 
@@ -443,6 +460,75 @@ function abrirAplicacao(userData) {
     observarHistorico();
 
     elemento('main-content')?.focus();
+}
+
+// =====================================
+// RESTAURAR SESSÃO FIREBASE
+// =====================================
+
+function iniciarAutenticacao() {
+    if (authStateInitialized) return;
+    authStateInitialized = true;
+
+    auth.onAuthStateChanged(async user => {
+        if (!user) {
+            currentUser = null;
+            currentUserData = null;
+
+            const app = elemento('view-app');
+            const login = elemento('view-login');
+
+            if (app) app.hidden = true;
+            if (login) login.hidden = false;
+
+            pararObservacaoEntregas();
+            pararListener(historyUnsubscribe);
+            pararListener(chatUnsubscribe);
+
+            historyUnsubscribe = null;
+            chatUnsubscribe = null;
+
+            limparMiniMapas();
+
+            return;
+        }
+
+        currentUser = user;
+
+        try {
+            const doc = await db.collection('users')
+                .doc(user.uid)
+                .get();
+
+            if (!doc.exists) {
+                throw new Error('Perfil do usuário não encontrado.');
+            }
+
+            const data = doc.data();
+
+            if (!['vendor', 'driver'].includes(data.role)) {
+                throw new Error('Perfil de usuário inválido.');
+            }
+
+            currentUserData = data;
+            currentRole = data.role;
+
+            abrirAplicacao(data);
+
+        } catch (error) {
+            console.error('Erro ao restaurar sessão:', error);
+
+            currentUser = null;
+            currentUserData = null;
+
+            await auth.signOut().catch(console.error);
+
+            exibirFeedback(
+                'auth-feedback',
+                'Não foi possível restaurar sua sessão. Faça login novamente.'
+            );
+        }
+    });
 }
 
 // =====================================
@@ -508,6 +594,10 @@ function navigateApp(viewId) {
         return;
     }
 
+    if (viewId !== 'sub-vendor-track') {
+        limparMiniMapas();
+    }
+
     document.querySelectorAll('.main-content .view').forEach(view => {
         view.classList.remove('active');
         view.hidden = true;
@@ -517,6 +607,13 @@ function navigateApp(viewId) {
 
     requestAnimationFrame(() => {
         target.classList.add('active');
+
+        if (viewId === 'sub-vendor-track') {
+            renderizarAcompanhamentoEmpresa(
+                entregasEmpresaAtuais,
+                entregaAcompanhamentoId
+            );
+        }
     });
 
     document.querySelectorAll('#nav-list button.nav-btn').forEach(btn => {
@@ -740,11 +837,14 @@ async function doRegister() {
         };
 
         if (createdUser && auth.currentUser) {
+            await auth.signOut().catch(console.error);
+
             exibirFeedback(
                 'auth-feedback',
-                'A conta de autenticação foi criada, mas não foi possível salvar o perfil no Firestore. Verifique as regras do banco de dados.',
+                'Não foi possível salvar o perfil no banco de dados. Entre em contato com o suporte.',
                 'error'
             );
+
             return;
         }
 
@@ -907,6 +1007,672 @@ function observarEntregasEmpresa() {
 }
 
 // =====================================
+// MINI MAPAS — LEAFLET
+// =====================================
+
+function limparMiniMapas() {
+    trackingRenderToken++;
+
+    miniMapsInstances.forEach(map => {
+        try {
+            map.remove();
+        } catch (error) {
+            console.warn('Erro ao destruir mini mapa:', error);
+        }
+    });
+
+    miniMapsInstances.clear();
+}
+
+function aguardar(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function geocodificarEndereco(endereco) {
+    const queryOriginal = String(endereco || '').trim();
+
+    if (!queryOriginal) return null;
+
+    if (geocodeCache.has(queryOriginal)) {
+        return geocodeCache.get(queryOriginal);
+    }
+
+    try {
+        const query = /brasil/i.test(queryOriginal)
+            ? queryOriginal
+            : `${queryOriginal}, Brasil`;
+
+        const url =
+            `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(query)}`;
+
+        const response = await fetch(url, {
+            headers: {
+                Accept: 'application/json'
+            }
+        });
+
+        if (!response.ok) return null;
+
+        const results = await response.json();
+
+        if (!Array.isArray(results) || results.length === 0) {
+            return null;
+        }
+
+        const latitude = Number(results[0].lat);
+        const longitude = Number(results[0].lon);
+
+        if (
+            !Number.isFinite(latitude) ||
+            !Number.isFinite(longitude)
+        ) {
+            return null;
+        }
+
+        const coordenadas = [latitude, longitude];
+
+        geocodeCache.set(queryOriginal, coordenadas);
+
+        return coordenadas;
+
+    } catch (error) {
+        console.warn('Erro ao geocodificar endereço:', error);
+        return null;
+    }
+}
+
+async function montarMiniMapasRota(entregas) {
+    if (typeof L === 'undefined') {
+        console.warn('Leaflet não foi carregado.');
+        return;
+    }
+
+    limparMiniMapas();
+
+    const token = trackingRenderToken;
+
+    for (const entrega of entregas) {
+        if (token !== trackingRenderToken) return;
+
+        const container = elemento(`mini-map-${entrega.id}`);
+
+        if (!container || !container.isConnected) continue;
+
+        const mapa = L.map(container, {
+            zoomControl: false,
+            attributionControl: true,
+            scrollWheelZoom: false
+        }).setView([-23.5505, -46.6333], 12);
+
+        L.tileLayer(
+            'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+            {
+                maxZoom: 19,
+                attribution: '&copy; OpenStreetMap contributors'
+            }
+        ).addTo(mapa);
+
+        miniMapsInstances.set(entrega.id, mapa);
+
+        const origem = await geocodificarEndereco(entrega.retirada);
+
+        if (token !== trackingRenderToken) return;
+
+        await aguardar(1100);
+
+        const destino = await geocodificarEndereco(entrega.destino);
+
+        if (token !== trackingRenderToken) return;
+        if (!container.isConnected) continue;
+
+        const pontos = [];
+
+        if (origem) {
+            pontos.push(origem);
+
+            L.circleMarker(origem, {
+                radius: 7,
+                color: '#105c38',
+                fillColor: '#16784B',
+                fillOpacity: 1,
+                weight: 2
+            })
+                .bindTooltip(`Retirada: ${entrega.retirada || '-'}`)
+                .addTo(mapa);
+        }
+
+        if (destino) {
+            pontos.push(destino);
+
+            L.circleMarker(destino, {
+                radius: 7,
+                color: '#0f241a',
+                fillColor: '#a83232',
+                fillOpacity: 1,
+                weight: 2
+            })
+                .bindTooltip(`Destino: ${entrega.destino || '-'}`)
+                .addTo(mapa);
+        }
+
+        if (origem && destino) {
+            L.polyline(
+                [origem, destino],
+                {
+                    color: '#16784B',
+                    weight: 4,
+                    opacity: 0.85,
+                    dashArray: '6, 6'
+                }
+            ).addTo(mapa);
+
+            mapa.fitBounds(
+                L.latLngBounds([origem, destino]),
+                {
+                    padding: [24, 24]
+                }
+            );
+
+        } else if (pontos.length === 1) {
+            mapa.setView(pontos[0], 14);
+
+        } else {
+            const aviso = document.createElement('span');
+            aviso.className = 'mini-map-badge';
+            aviso.textContent = 'Endereço não localizado';
+            container.appendChild(aviso);
+        }
+
+        setTimeout(() => {
+            if (
+                miniMapsInstances.get(entrega.id) === mapa &&
+                container.isConnected
+            ) {
+                mapa.invalidateSize();
+            }
+        }, 150);
+    }
+}
+
+// =====================================
+// ESTRUTURA DO ACOMPANHAMENTO
+// =====================================
+
+function garantirEstruturaAcompanhamento() {
+    const tela = elemento('sub-vendor-track');
+
+    if (!tela) {
+        console.error('Tela de acompanhamento não encontrada.');
+        return null;
+    }
+
+    let lista = elemento('track-delivery-list');
+
+    if (!lista) {
+        lista = document.createElement('div');
+        lista.id = 'track-delivery-list';
+        lista.className = 'track-delivery-list';
+
+        const painel = tela.querySelector('.glass-panel');
+
+        if (painel) {
+            painel.appendChild(lista);
+        } else {
+            tela.appendChild(lista);
+        }
+    }
+
+    let titulo = elemento('track-selected-title');
+
+    if (!titulo) {
+        titulo = document.createElement('h2');
+        titulo.id = 'track-selected-title';
+        titulo.textContent = 'Etapas da entrega';
+
+        lista.insertAdjacentElement('afterend', titulo);
+    }
+
+    let etapas = elemento('track-stepper');
+
+    if (!etapas) {
+        etapas = document.createElement('div');
+        etapas.id = 'track-stepper';
+        etapas.className = 'track-stepper';
+
+        titulo.insertAdjacentElement('afterend', etapas);
+    }
+
+    return {
+        lista,
+        titulo,
+        etapas
+    };
+}
+
+// =====================================
+// ACOMPANHAMENTO DA EMPRESA
+// =====================================
+
+function acompanharEntrega(deliveryId) {
+    if (!deliveryId) return;
+
+    entregaAcompanhamentoId = deliveryId;
+
+    navigateApp('sub-vendor-track');
+
+    requestAnimationFrame(() => {
+        renderizarAcompanhamentoEmpresa(
+            entregasEmpresaAtuais,
+            deliveryId
+        );
+    });
+}
+
+function selecionarEntregaAcompanhamento(deliveryId) {
+    if (!deliveryId) return;
+
+    const entrega = entregasEmpresaAtuais.find(
+        item => item.id === deliveryId
+    );
+
+    if (!entrega) return;
+
+    entregaAcompanhamentoId = deliveryId;
+
+    renderizarAcompanhamentoEmpresa(
+        entregasEmpresaAtuais,
+        deliveryId
+    );
+}
+
+function renderizarMiniMapaHTML(entrega) {
+    return `
+        <div
+            id="mini-map-${escaparHTML(entrega.id)}"
+            class="mini-map"
+            role="region"
+            aria-label="Mapa de retirada e destino da entrega para ${escaparHTML(entrega.cliente || 'cliente')}">
+
+            <span class="mini-map-badge">
+                ${escaparHTML(formatarStatus(entrega.status))}
+            </span>
+        </div>
+    `;
+}
+
+function renderizarEtapasAcompanhamento(entrega) {
+    const estrutura = garantirEstruturaAcompanhamento();
+
+    if (!estrutura) return;
+
+    const { titulo, etapas } = estrutura;
+
+    if (!entrega) {
+        titulo.textContent = 'Etapas da entrega';
+
+        etapas.innerHTML = `
+            <p class="empty-track-msg">
+                Nenhuma entrega em andamento selecionada.
+            </p>
+        `;
+
+        return;
+    }
+
+    const status = normalizarStatus(entrega.status);
+
+    const passo1 = true;
+
+    const passo2 = Boolean(
+        entrega.entregadorId ||
+        [
+            'aceita',
+            'em_andamento',
+            'em_transito',
+            'coletado',
+            'concluida'
+        ].includes(status)
+    );
+
+    const passo3 = [
+        'em_andamento',
+        'em_transito',
+        'coletado',
+        'concluida'
+    ].includes(status);
+
+    const passo4 = status === 'concluida';
+
+    titulo.textContent =
+        `Etapas da entrega — ${entrega.cliente || 'Cliente'}`;
+
+    etapas.innerHTML = `
+        <ol class="track-steps-list">
+
+            <li class="${passo1 ? 'done' : ''}">
+                <strong>1. Solicitação publicada</strong>
+                <span>
+                    Retirada: ${escaparHTML(entrega.retirada || '-')}
+                </span>
+            </li>
+
+            <li class="${passo2 ? 'done' : ''}">
+                <strong>2. Entregador atribuído</strong>
+                <span>
+                    ${escaparHTML(
+                        entrega.entregadorNome ||
+                        'Aguardando aceite de entregador'
+                    )}
+                </span>
+            </li>
+
+            <li class="${passo3 ? 'done' : ''}">
+                <strong>3. Entrega em trânsito</strong>
+                <span>
+                    Destino: ${escaparHTML(entrega.destino || '-')}
+                </span>
+            </li>
+
+            <li class="${passo4 ? 'done' : ''}">
+                <strong>4. Entrega concluída</strong>
+                <span>
+                    Status: ${escaparHTML(formatarStatus(entrega.status))}
+                </span>
+            </li>
+
+        </ol>
+    `;
+}
+
+function renderizarAcompanhamentoEmpresa(
+    entregas,
+    selecionadaId = null
+) {
+    const estrutura = garantirEstruturaAcompanhamento();
+
+    if (!estrutura) return;
+
+    const listaEl = estrutura.lista;
+
+    const emAndamento = (entregas || []).filter(
+        item => isEntregaEmAndamento(item.status)
+    );
+
+    if (!emAndamento.length) {
+        limparMiniMapas();
+
+        listaEl.innerHTML = `
+            <article class="glass-panel delivery-item track-card-grid">
+                <div class="del-info">
+                    <h3>Nenhuma entrega em andamento</h3>
+
+                    <p>
+                        Todas as entregas ativas da empresa aparecerão aqui.
+                    </p>
+                </div>
+            </article>
+        `;
+
+        renderizarEtapasAcompanhamento(null);
+
+        return;
+    }
+
+    const ativaId =
+        emAndamento.some(item => item.id === selecionadaId)
+            ? selecionadaId
+            : (
+                emAndamento.some(
+                    item => item.id === entregaAcompanhamentoId
+                )
+                    ? entregaAcompanhamentoId
+                    : emAndamento[0].id
+            );
+
+    entregaAcompanhamentoId = ativaId;
+
+    listaEl.innerHTML = emAndamento.map(entrega => {
+        const selecionada = entrega.id === ativaId;
+
+        const entregador = entrega.entregadorNome
+            ? `${escaparHTML(entrega.entregadorNome)}${
+                entrega.entregadorTelefone
+                    ? ` — ${escaparHTML(entrega.entregadorTelefone)}`
+                    : ''
+            }`
+            : 'Aguardando entregador';
+
+        const id = escaparHTML(entrega.id);
+
+        return `
+            <article
+                class="glass-panel delivery-item track-card-grid
+                ${selecionada ? 'selected-track' : ''}"
+                data-delivery-id="${id}">
+
+                <div class="del-info">
+
+                    <h3>
+                        Cliente: ${escaparHTML(entrega.cliente || 'Não informado')}
+                    </h3>
+
+                    <p>
+                        <strong>Status:</strong>
+                        ${escaparHTML(formatarStatus(entrega.status))}
+                    </p>
+
+                    <p>
+                        <strong>Retirada:</strong>
+                        ${escaparHTML(entrega.retirada || '-')}
+                    </p>
+
+                    <p>
+                        <strong>Destino:</strong>
+                        ${escaparHTML(entrega.destino || '-')}
+                    </p>
+
+                    <p>
+                        <strong>Entregador:</strong>
+                        ${entregador}
+                    </p>
+
+                    <div class="del-actions"
+                        style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px;">
+
+                        <button
+                            type="button"
+                            class="btn-primary"
+                            onclick="selecionarEntregaAcompanhamento('${id}')">
+
+                            Selecionar entrega
+                        </button>
+
+                        <button
+                            type="button"
+                            class="btn-glass"
+                            onclick="abrirChat('${id}', 'sub-vendor-track')">
+
+                            Abrir conversa
+                        </button>
+
+                    </div>
+                </div>
+
+                ${renderizarMiniMapaHTML(entrega)}
+
+            </article>
+        `;
+    }).join('');
+
+    const entregaSelecionada = emAndamento.find(
+        item => item.id === ativaId
+    ) || emAndamento[0];
+
+    renderizarEtapasAcompanhamento(entregaSelecionada);
+
+    if (!elemento('sub-vendor-track')?.hidden) {
+        // Cada entrega recebe seu próprio mini mapa.
+        montarMiniMapasRota(emAndamento);
+    }
+}
+
+// =====================================
+// PAINEL DA EMPRESA
+// =====================================
+
+function renderizarEntregasEmpresa(entregas) {
+    entregasEmpresaAtuais = entregas || [];
+
+    const ativas = entregasEmpresaAtuais.filter(
+        item => isEntregaEmAndamento(item.status)
+    );
+
+    const pendentesCount = ativas.filter(
+        item => normalizarStatus(item.status) === 'pendente'
+    ).length;
+
+    const transitoCount = ativas.filter(item => {
+        const st = normalizarStatus(item.status);
+
+        return [
+            'aceita',
+            'em_andamento',
+            'em_transito',
+            'coletado'
+        ].includes(st);
+    }).length;
+
+    const hoje = new Date().toLocaleDateString('pt-BR');
+
+    const concluidasHojeCount = entregasEmpresaAtuais.filter(item => {
+        if (normalizarStatus(item.status) !== 'concluida') {
+            return false;
+        }
+
+        if (
+            !item.concluidaEm ||
+            typeof item.concluidaEm.toDate !== 'function'
+        ) {
+            return false;
+        }
+
+        return item.concluidaEm.toDate().toLocaleDateString('pt-BR') === hoje;
+    }).length;
+
+    if (elemento('stat-pending')) {
+        elemento('stat-pending').textContent = String(pendentesCount);
+    }
+
+    if (elemento('stat-transit')) {
+        elemento('stat-transit').textContent = String(transitoCount);
+    }
+
+    if (elemento('stat-completed')) {
+        elemento('stat-completed').textContent = String(concluidasHojeCount);
+    }
+
+    const listaEl = elemento('vendor-delivery-list');
+
+    if (listaEl) {
+        if (!ativas.length) {
+            listaEl.innerHTML = `
+                <article class="glass-panel delivery-item">
+                    <div class="del-info">
+                        <h3>Nenhuma entrega cadastrada</h3>
+                        <p>
+                            Suas solicitações aparecerão aqui quando forem cadastradas.
+                        </p>
+                    </div>
+                </article>
+            `;
+
+        } else {
+            listaEl.innerHTML = ativas.map(entrega => {
+                const entregadorTxt = entrega.entregadorNome
+                    ? `${escaparHTML(entrega.entregadorNome)}${
+                        entrega.entregadorTelefone
+                            ? ` — ${escaparHTML(entrega.entregadorTelefone)}`
+                            : ''
+                    }`
+                    : 'Aguardando entregador';
+
+                const id = escaparHTML(entrega.id);
+
+                return `
+                    <article class="glass-panel delivery-item">
+
+                        <div class="del-info">
+
+                            <h3>
+                                Cliente: ${escaparHTML(entrega.cliente || 'Não informado')}
+                            </h3>
+
+                            <p>
+                                <strong>Status:</strong>
+                                ${escaparHTML(formatarStatus(entrega.status))}
+                            </p>
+
+                            <p>
+                                <strong>Retirada:</strong>
+                                ${escaparHTML(entrega.retirada || '-')}
+                            </p>
+
+                            <p>
+                                <strong>Destino:</strong>
+                                ${escaparHTML(entrega.destino || '-')}
+                            </p>
+
+                            <p>
+                                <strong>Telefone:</strong>
+                                ${escaparHTML(entrega.telefone || '-')}
+                            </p>
+
+                            <p>
+                                <strong>Entregador:</strong>
+                                ${entregadorTxt}
+                            </p>
+
+                        </div>
+
+                        <div class="del-actions"
+                            style="display:flex;gap:10px;flex-wrap:wrap;">
+
+                            <button
+                                type="button"
+                                class="btn-primary"
+                                onclick="acompanharEntrega('${id}')">
+
+                                Acompanhar
+                            </button>
+
+                            <button
+                                type="button"
+                                class="btn-glass"
+                                onclick="abrirChat('${id}', 'sub-vendor-dash')">
+
+                                Abrir conversa
+                            </button>
+
+                        </div>
+
+                    </article>
+                `;
+            }).join('');
+        }
+    }
+
+    if (
+        elemento('sub-vendor-track') &&
+        !elemento('sub-vendor-track').hidden
+    ) {
+        renderizarAcompanhamentoEmpresa(
+            entregasEmpresaAtuais,
+            entregaAcompanhamentoId
+        );
+    }
+}
+
+// =====================================
 // ENTREGAS DO ENTREGADOR
 // =====================================
 
@@ -992,17 +1758,151 @@ function observarEntregasEntregador() {
     );
 }
 
+function renderizarEntregasMotorista(entregas) {
+    const listaEl = elemento('driver-delivery-list');
+
+    if (!listaEl) return;
+
+    const visiveis = (entregas || []).filter(
+        item => isEntregaEmAndamento(item.status)
+    );
+
+    if (!visiveis.length) {
+        listaEl.innerHTML = `
+            <article class="glass-panel delivery-item">
+                <div class="del-info">
+                    <h3>Nenhuma entrega disponível</h3>
+                    <p>
+                        Novas solicitações aparecerão aqui quando estiverem disponíveis.
+                    </p>
+                </div>
+            </article>
+        `;
+
+        return;
+    }
+
+    listaEl.innerHTML = visiveis.map(entrega => {
+        const st = normalizarStatus(entrega.status);
+        const idEscapado = escaparHTML(entrega.id);
+
+        let botoesAcao = '';
+
+        if (st === 'pendente' && !entrega.entregadorId) {
+            botoesAcao += `
+                <button
+                    type="button"
+                    class="btn-primary"
+                    onclick="aceitarEntrega('${idEscapado}')">
+                    Aceitar entrega
+                </button>
+            `;
+
+        } else if (entrega.entregadorId === currentUser?.uid) {
+            if (st === 'aceita') {
+                botoesAcao += `
+                    <button
+                        type="button"
+                        class="btn-primary"
+                        onclick="atualizarStatusEntrega('${idEscapado}', 'em_andamento')">
+                        Iniciar entrega
+                    </button>
+                `;
+            }
+
+            if (st === 'aceita' || st === 'em_andamento') {
+                botoesAcao += `
+                    <button
+                        type="button"
+                        class="btn-glass"
+                        onclick="concluirEntrega('${idEscapado}')">
+                        Concluir entrega
+                    </button>
+                `;
+            }
+        }
+
+        if (entrega.entregadorId === currentUser?.uid) {
+            botoesAcao += `
+                <button
+                    type="button"
+                    class="btn-glass"
+                    onclick="abrirChat('${idEscapado}', 'sub-driver-dash')">
+                    Abrir conversa
+                </button>
+            `;
+        }
+
+        return `
+            <article class="glass-panel delivery-item">
+
+                <div class="del-info">
+
+                    <h3>
+                        Cliente: ${escaparHTML(entrega.cliente || 'Não informado')}
+                    </h3>
+
+                    <p>
+                        <strong>Empresa:</strong>
+                        ${escaparHTML(entrega.empresaNome || '-')}
+                    </p>
+
+                    <p>
+                        <strong>Status:</strong>
+                        ${escaparHTML(formatarStatus(entrega.status))}
+                    </p>
+
+                    <p>
+                        <strong>Retirada:</strong>
+                        ${escaparHTML(entrega.retirada || '-')}
+                    </p>
+
+                    <p>
+                        <strong>Destino:</strong>
+                        ${escaparHTML(entrega.destino || '-')}
+                    </p>
+
+                    <p>
+                        <strong>Telefone:</strong>
+                        ${escaparHTML(entrega.telefone || '-')}
+                    </p>
+
+                    ${
+                        entrega.instrucoes
+                            ? `<p><strong>Instruções:</strong> ${escaparHTML(entrega.instrucoes)}</p>`
+                            : ''
+                    }
+
+                </div>
+
+                <div class="del-actions"
+                    style="display:flex;gap:10px;flex-wrap:wrap;">
+                    ${botoesAcao}
+                </div>
+
+            </article>
+        `;
+    }).join('');
+}
+
 // =====================================
 // ACEITAR ENTREGA
 // =====================================
 
 async function aceitarEntrega(deliveryId) {
-    if (deliveryActionPending || !deliveryId || !usuarioAutenticado()) {
+    if (
+        deliveryActionPending ||
+        !deliveryId ||
+        !usuarioAutenticado()
+    ) {
         return;
     }
 
     if (currentRole !== 'driver') {
-        exibirFeedback('app-feedback', 'Somente entregadores podem aceitar entregas.');
+        exibirFeedback(
+            'app-feedback',
+            'Somente entregadores podem aceitar entregas.'
+        );
         return;
     }
 
@@ -1010,7 +1910,6 @@ async function aceitarEntrega(deliveryId) {
     limparFeedback('app-feedback');
 
     try {
-        // Busca os dados do perfil do entregador.
         const perfilSnap = await db.collection('users')
             .doc(currentUser.uid)
             .get();
@@ -1079,21 +1978,29 @@ async function aceitarEntrega(deliveryId) {
             'app-feedback',
             error.message || 'Não foi possível aceitar a entrega.'
         );
+
     } finally {
         deliveryActionPending = false;
     }
 }
 
 // =====================================
-// ATUALIZAR STATUS DA ENTREGA
+// ATUALIZAR STATUS
 // =====================================
 
 async function atualizarStatusEntrega(deliveryId, novoStatus) {
-    if (deliveryActionPending || !deliveryId || !usuarioAutenticado()) {
+    if (
+        deliveryActionPending ||
+        !deliveryId ||
+        !usuarioAutenticado()
+    ) {
         return;
     }
 
-    if (currentRole !== 'driver' || novoStatus !== 'em_andamento') {
+    if (
+        currentRole !== 'driver' ||
+        novoStatus !== 'em_andamento'
+    ) {
         exibirFeedback('app-feedback', 'Ação não permitida.');
         return;
     }
@@ -1141,6 +2048,7 @@ async function atualizarStatusEntrega(deliveryId, novoStatus) {
             'app-feedback',
             error.message || 'Não foi possível atualizar o status.'
         );
+
     } finally {
         deliveryActionPending = false;
     }
@@ -1151,12 +2059,20 @@ async function atualizarStatusEntrega(deliveryId, novoStatus) {
 // =====================================
 
 async function concluirEntrega(deliveryId) {
-    if (deliveryActionPending || !deliveryId || !usuarioAutenticado()) {
+    if (
+        deliveryActionPending ||
+        !deliveryId ||
+        !usuarioAutenticado()
+    ) {
         return;
     }
 
     if (currentRole !== 'driver') {
-        exibirFeedback('app-feedback', 'Somente entregadores podem concluir entregas.');
+        exibirFeedback(
+            'app-feedback',
+            'Somente entregadores podem concluir entregas.'
+        );
+
         return;
     }
 
@@ -1185,23 +2101,22 @@ async function concluirEntrega(deliveryId) {
                 throw new Error('Você não é o responsável por esta entrega.');
             }
 
-            if (normalizarStatus(dados.status) !== 'em_andamento') {
-                throw new Error('Somente entregas em andamento podem ser concluídas.');
+            const st = normalizarStatus(dados.status);
+
+            if (st !== 'em_andamento' && st !== 'aceita') {
+                throw new Error('Esta entrega não pode ser concluída neste momento.');
             }
 
             transaction.update(deliveryRef, {
                 status: 'concluida',
                 concluidaEm: firebase.firestore.FieldValue.serverTimestamp(),
-                concluidaPor: currentUser.uid,
-                entregadorNome: dados.entregadorNome || nomeUsuario(),
-                entregadorTelefone: dados.entregadorTelefone || telefoneUsuario(),
                 updatedAt: firebase.firestore.FieldValue.serverTimestamp()
             });
         });
 
         exibirFeedback(
             'app-feedback',
-            'Entrega concluída e salva no histórico com sucesso!',
+            'Entrega concluída com sucesso!',
             'success'
         );
 
@@ -1212,6 +2127,7 @@ async function concluirEntrega(deliveryId) {
             'app-feedback',
             error.message || 'Não foi possível concluir a entrega.'
         );
+
     } finally {
         deliveryActionPending = false;
     }
@@ -1221,496 +2137,182 @@ async function concluirEntrega(deliveryId) {
 // HISTÓRICO
 // =====================================
 
-function pararObservacaoHistorico() {
-    if (historyUnsubscribe) {
-        historyUnsubscribe();
-        historyUnsubscribe = null;
-    }
-}
-
 function observarHistorico() {
-    pararObservacaoHistorico();
+    pararListener(historyUnsubscribe);
+    historyUnsubscribe = null;
 
     if (!usuarioAutenticado()) return;
 
-    const campoFiltro = currentRole === 'driver'
-        ? 'entregadorId'
-        : 'empresaId';
+    const campoFiltro = currentRole === 'vendor'
+        ? 'empresaId'
+        : 'entregadorId';
 
     historyUnsubscribe = db.collection('deliveries')
         .where(campoFiltro, '==', currentUser.uid)
-        .where('status', '==', 'concluida')
         .onSnapshot(snapshot => {
             const concluidas = [];
 
             snapshot.forEach(doc => {
-                concluidas.push({
-                    id: doc.id,
-                    ...doc.data()
-                });
+                const data = doc.data();
+
+                if (normalizarStatus(data.status) === 'concluida') {
+                    concluidas.push({
+                        id: doc.id,
+                        ...data
+                    });
+                }
             });
 
             concluidas.sort((a, b) => {
-                const dataA = obterMilissegundos(a.concluidaEm) ||
-                    obterMilissegundos(a.updatedAt);
-
-                const dataB = obterMilissegundos(b.concluidaEm) ||
-                    obterMilissegundos(b.updatedAt);
-
-                return dataB - dataA;
+                return obterMilissegundos(
+                    b.concluidaEm || b.updatedAt || b.createdAt
+                ) - obterMilissegundos(
+                    a.concluidaEm || a.updatedAt || a.createdAt
+                );
             });
 
-            renderizarHistorico(concluidas);
+            const listaEl = elemento('history-delivery-list');
+
+            if (!listaEl) return;
+
+            if (!concluidas.length) {
+                listaEl.innerHTML = `
+                    <article class="glass-panel delivery-item">
+                        <div class="del-info">
+                            <h3>Nenhuma entrega no histórico</h3>
+                            <p>
+                                As entregas concluídas aparecerão aqui.
+                            </p>
+                        </div>
+                    </article>
+                `;
+
+                return;
+            }
+
+            listaEl.innerHTML = concluidas.map(entrega => `
+                <article class="glass-panel delivery-item">
+
+                    <div class="del-info">
+
+                        <h3>
+                            Cliente: ${escaparHTML(entrega.cliente || 'Não informado')}
+                        </h3>
+
+                        <p>
+                            <strong>Destino:</strong>
+                            ${escaparHTML(entrega.destino || '-')}
+                        </p>
+
+                        <p>
+                            <strong>Entregador:</strong>
+                            ${escaparHTML(entrega.entregadorNome || '-')}
+                        </p>
+
+                        <p>
+                            <strong>Concluída em:</strong>
+                            ${escaparHTML(
+                                obterData(entrega.concluidaEm || entrega.updatedAt)
+                            )}
+                        </p>
+
+                    </div>
+
+                </article>
+            `).join('');
 
         }, error => {
-            console.error('Erro ao observar histórico:', error);
+            console.error('Erro ao carregar histórico:', error);
 
             exibirFeedback(
                 'app-feedback',
-                'Não foi possível carregar o histórico. Verifique as permissões do Firestore.'
+                'Não foi possível carregar o histórico.'
             );
         });
 }
 
-function renderizarHistorico(listaConcluidas) {
-    const container = elemento('history-delivery-list');
-    if (!container) return;
-
-    if (listaConcluidas.length === 0) {
-        container.innerHTML = `
-            <article class="glass-panel delivery-item">
-                <div class="del-info">
-                    <h3>Nenhuma entrega concluída</h3>
-                    <p>As entregas finalizadas aparecerão registradas aqui.</p>
-                </div>
-            </article>
-        `;
-        return;
-    }
-
-    container.innerHTML = listaConcluidas.map(entrega => `
-        <article class="glass-panel delivery-item">
-            <div class="del-info">
-                <span class="status-badge status-concluida">
-                    Concluída
-                </span>
-
-                <h3>Entrega #${escaparHTML(entrega.id.substring(0, 6))}</h3>
-
-                <p><strong>Cliente:</strong>
-                    ${escaparHTML(entrega.cliente || 'Não informado')}
-                </p>
-
-                <p><strong>Retirada:</strong>
-                    ${escaparHTML(entrega.retirada || 'Não informado')}
-                </p>
-
-                <p><strong>Destino:</strong>
-                    ${escaparHTML(entrega.destino || 'Não informado')}
-                </p>
-
-                <p><strong>Concluída em:</strong>
-                    ${escaparHTML(obterData(entrega.concluidaEm || entrega.updatedAt))}
-                </p>
-
-                ${currentRole === 'driver' ? `
-                    <p><strong>Empresa:</strong>
-                        ${escaparHTML(entrega.empresaNome || 'Não informado')}
-                    </p>
-                ` : `
-                    <p><strong>Entregador:</strong>
-                        ${escaparHTML(entrega.entregadorNome || 'Não informado')}
-                    </p>
-
-                    <p><strong>Telefone do entregador:</strong>
-                        ${escaparHTML(entrega.entregadorTelefone || 'Não informado')}
-                    </p>
-                `}
-            </div>
-        </article>
-    `).join('');
-}
-
 // =====================================
-// RENDERIZAR ENTREGAS DA EMPRESA
+// CHAT
 // =====================================
 
-function renderizarEntregasEmpresa(entregas) {
-    const container = elemento('vendor-delivery-list');
-    if (!container) return;
-
-    const ativas = entregas.filter(entrega => {
-        return !['concluida', 'cancelada'].includes(
-            normalizarStatus(entrega.status)
-        );
-    });
-
-    if (ativas.length === 0) {
-        container.innerHTML = `
-            <article class="glass-panel delivery-item">
-                <div class="del-info">
-                    <h3>Nenhuma entrega ativa</h3>
-                    <p>Suas solicitações aparecerão aqui quando forem cadastradas.</p>
-                </div>
-            </article>
-        `;
-    } else {
-        container.innerHTML = ativas.map(entrega => {
-            const status = normalizarStatus(entrega.status);
-            const entregadorDefinido = Boolean(entrega.entregadorId);
-
-            return `
-                <article class="glass-panel delivery-item">
-                    <div class="del-info">
-                        <h3>Entrega #${escaparHTML(entrega.id.substring(0, 6))}</h3>
-
-                        <p><strong>Cliente:</strong>
-                            ${escaparHTML(entrega.cliente || 'Não informado')}
-                        </p>
-
-                        <p><strong>Retirada:</strong>
-                            ${escaparHTML(entrega.retirada || 'Não informado')}
-                        </p>
-
-                        <p><strong>Destino:</strong>
-                            ${escaparHTML(entrega.destino || 'Não informado')}
-                        </p>
-
-                        <p><strong>Telefone do cliente:</strong>
-                            ${escaparHTML(entrega.telefone || 'Não informado')}
-                        </p>
-
-                        <p><strong>Status:</strong>
-                            ${escaparHTML(formatarStatus(entrega.status))}
-                        </p>
-
-                        <p><strong>Data:</strong>
-                            ${escaparHTML(obterData(entrega.createdAt))}
-                        </p>
-
-                        ${entrega.instrucoes ? `
-                            <p><strong>Instruções:</strong>
-                                ${escaparHTML(entrega.instrucoes)}
-                            </p>
-                        ` : ''}
-
-                        ${entregadorDefinido ? `
-                            <div class="glass-panel driver-assignment"
-                                style="margin-top:14px;padding:14px;">
-
-                                <h4>Entregador responsável</h4>
-
-                                <p>
-                                    <strong>Nome:</strong>
-                                    ${escaparHTML(entrega.entregadorNome || 'Nome não informado')}
-                                </p>
-
-                                <p>
-                                    <strong>Telefone:</strong>
-                                    ${escaparHTML(entrega.entregadorTelefone || 'Não informado')}
-                                </p>
-
-                                <p>
-                                    <strong>Situação:</strong>
-                                    ${status === 'aceita'
-                                        ? 'Aceitou a solicitação.'
-                                        : status === 'em_andamento'
-                                            ? 'Está realizando a entrega.'
-                                            : 'Responsável pela entrega.'}
-                                </p>
-
-                                <button type="button"
-                                    class="btn-primary"
-                                    onclick="abrirChat('${escaparHTML(entrega.id)}')">
-                                    Abrir conversa
-                                </button>
-                            </div>
-                        ` : `
-                            <p class="delivery-waiting">
-                                <strong>Entregador:</strong>
-                                Aguardando um entregador aceitar esta solicitação.
-                            </p>
-                        `}
-                    </div>
-                </article>
-            `;
-        }).join('');
-    }
-
-    const pendentes = entregas.filter(e =>
-        normalizarStatus(e.status) === 'pendente'
-    ).length;
-
-    const transito = entregas.filter(e =>
-        ['aceita', 'em_andamento'].includes(normalizarStatus(e.status))
-    ).length;
-
-    const hoje = new Date();
-
-    const concluidas = entregas.filter(e => {
-        if (normalizarStatus(e.status) !== 'concluida') return false;
-
-        const timestamp = e.concluidaEm || e.updatedAt;
-
-        return timestamp?.toDate &&
-            timestamp.toDate().toDateString() === hoje.toDateString();
-    }).length;
-
-    if (elemento('stat-pending')) {
-        elemento('stat-pending').textContent = pendentes;
-    }
-
-    if (elemento('stat-transit')) {
-        elemento('stat-transit').textContent = transito;
-    }
-
-    if (elemento('stat-completed')) {
-        elemento('stat-completed').textContent = concluidas;
-    }
-}
-
-// =====================================
-// RENDERIZAR ENTREGAS DO ENTREGADOR
-// =====================================
-
-function renderizarEntregasMotorista(entregas) {
-    const container = elemento('driver-delivery-list');
-    if (!container || !currentUser) return;
-
-    const ativas = entregas.filter(item => {
-        const status = normalizarStatus(item.status);
-
-        if (['concluida', 'cancelada'].includes(status)) {
-            return false;
-        }
-
-        if (status === 'pendente') {
-            return !item.entregadorId;
-        }
-
-        return item.entregadorId === currentUser.uid;
-    });
-
-    if (ativas.length === 0) {
-        container.innerHTML = `
-            <article class="glass-panel delivery-item">
-                <div class="del-info">
-                    <h3>Nenhuma entrega disponível</h3>
-                    <p>Novas solicitações aparecerão aqui quando estiverem disponíveis.</p>
-                </div>
-            </article>
-        `;
-        return;
-    }
-
-    container.innerHTML = ativas.map(entrega => {
-        const minhaEntrega = entrega.entregadorId === currentUser.uid;
-        const status = normalizarStatus(entrega.status);
-
-        let botoesAcao = '';
-
-        if (!minhaEntrega && status === 'pendente') {
-            botoesAcao = `
-                <button type="button"
-                    class="btn-primary"
-                    onclick="aceitarEntrega('${escaparHTML(entrega.id)}')">
-                    Aceitar entrega
-                </button>
-            `;
-        } else if (minhaEntrega && status === 'aceita') {
-            botoesAcao = `
-                <button type="button"
-                    class="btn-glass"
-                    onclick="abrirChat('${escaparHTML(entrega.id)}')">
-                    Conversar
-                </button>
-
-                <button type="button"
-                    class="btn-primary"
-                    onclick="atualizarStatusEntrega('${escaparHTML(entrega.id)}', 'em_andamento')">
-                    Iniciar entrega
-                </button>
-            `;
-        } else if (minhaEntrega && status === 'em_andamento') {
-            botoesAcao = `
-                <button type="button"
-                    class="btn-glass"
-                    onclick="abrirChat('${escaparHTML(entrega.id)}')">
-                    Conversar
-                </button>
-
-                <button type="button"
-                    class="btn-primary"
-                    onclick="concluirEntrega('${escaparHTML(entrega.id)}')">
-                    Registrar como concluída
-                </button>
-            `;
-        }
-
-        return `
-            <article class="glass-panel delivery-item">
-                <div class="del-info">
-                    <h3>
-                        ${minhaEntrega ? 'Minha entrega' : 'Nova entrega'}
-                        #${escaparHTML(entrega.id.substring(0, 6))}
-                    </h3>
-
-                    <p><strong>Empresa:</strong>
-                        ${escaparHTML(entrega.empresaNome || 'Não informado')}
-                    </p>
-
-                    <p><strong>Cliente:</strong>
-                        ${escaparHTML(entrega.cliente || 'Não informado')}
-                    </p>
-
-                    <p><strong>Retirada:</strong>
-                        ${escaparHTML(entrega.retirada || 'Não informado')}
-                    </p>
-
-                    <p><strong>Destino:</strong>
-                        ${escaparHTML(entrega.destino || 'Não informado')}
-                    </p>
-
-                    <p><strong>Status:</strong>
-                        ${escaparHTML(formatarStatus(entrega.status))}
-                    </p>
-
-                    <p><strong>Data:</strong>
-                        ${escaparHTML(obterData(entrega.createdAt))}
-                    </p>
-
-                    ${entrega.instrucoes ? `
-                        <p><strong>Instruções:</strong>
-                            ${escaparHTML(entrega.instrucoes)}
-                        </p>
-                    ` : ''}
-
-                    <div class="del-actions"
-                        style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">
-                        ${botoesAcao}
-                    </div>
-                </div>
-            </article>
-        `;
-    }).join('');
-}
-
-// =====================================
-// LISTA DE CONVERSAS
-// =====================================
-
-async function abrirListaConversas() {
-    if (!usuarioAutenticado()) return;
-
+function abrirListaConversas() {
     navigateApp('sub-chat-list');
 
-    const container = elemento('chat-list');
-    if (!container) return;
+    const listEl = elemento('chat-list');
 
-    container.innerHTML = '<p>Carregando conversas...</p>';
+    if (!listEl) return;
 
-    try {
-        let query = db.collection('deliveries');
+    if (currentRole === 'vendor') {
+        const comConversa = (
+            entregasEmpresaAtuais || []
+        ).filter(e => Boolean(e.entregadorId));
 
-        if (currentRole === 'vendor') {
-            query = query.where('empresaId', '==', currentUser.uid);
-        } else {
-            query = query.where('entregadorId', '==', currentUser.uid);
-        }
+        if (!comConversa.length) {
+            listEl.innerHTML = `
+                <p>Nenhuma conversa disponível no momento.</p>
+            `;
 
-        const snapshot = await query.get();
-
-        const conversas = [];
-
-        snapshot.forEach(doc => {
-            const data = doc.data();
-
-            if (data.entregadorId) {
-                conversas.push({
-                    id: doc.id,
-                    ...data
-                });
-            }
-        });
-
-        conversas.sort((a, b) => {
-            return obterMilissegundos(b.updatedAt) -
-                obterMilissegundos(a.updatedAt);
-        });
-
-        if (conversas.length === 0) {
-            container.innerHTML = '<p>Nenhuma conversa disponível no momento.</p>';
             return;
         }
 
-        container.innerHTML = conversas.map(c => `
+        listEl.innerHTML = comConversa.map(entrega => `
             <article class="glass-panel chat-list-item">
+
                 <div class="chat-list-info">
-                    <h3>Entrega #${escaparHTML(c.id.substring(0, 6))}</h3>
 
-                    <p><strong>Cliente:</strong>
-                        ${escaparHTML(c.cliente || 'Não informado')}
+                    <h3>
+                        Cliente: ${escaparHTML(entrega.cliente || 'Entrega')}
+                    </h3>
+
+                    <p>
+                        Entregador: ${escaparHTML(entrega.entregadorNome || '-')}
                     </p>
 
-                    <p><strong>Status:</strong>
-                        ${escaparHTML(formatarStatus(c.status))}
-                    </p>
-
-                    ${currentRole === 'vendor' ? `
-                        <p><strong>Entregador:</strong>
-                            ${escaparHTML(c.entregadorNome || 'Não informado')}
-                        </p>
-                    ` : ''}
                 </div>
 
-                <button type="button"
+                <button
+                    type="button"
                     class="btn-primary"
-                    onclick="abrirChat('${escaparHTML(c.id)}')">
-                    Abrir chat
+                    onclick="abrirChat('${escaparHTML(entrega.id)}', 'sub-chat-list')">
+
+                    Abrir conversa
                 </button>
+
             </article>
         `).join('');
 
-    } catch (error) {
-        console.error('Erro ao listar conversas:', error);
-
-        container.innerHTML = '<p>Erro ao carregar conversas. Tente novamente.</p>';
+    } else {
+        listEl.innerHTML = `
+            <p>Suas conversas aparecerão aqui.</p>
+        `;
     }
 }
 
-// =====================================
-// ABRIR CHAT
-// =====================================
-
-async function abrirChat(deliveryId) {
+async function abrirChat(deliveryId, returnView = null) {
     if (!deliveryId || !usuarioAutenticado()) return;
 
-    if (chatUnsubscribe) {
-        pararListener(chatUnsubscribe);
-        chatUnsubscribe = null;
-    }
+    pararListener(chatUnsubscribe);
+    chatUnsubscribe = null;
 
     currentChatDeliveryId = deliveryId;
-    currentChatDelivery = null;
 
-    chatReturnView = currentRole === 'vendor'
-        ? 'sub-vendor-dash'
-        : 'sub-driver-dash';
+    chatReturnView = returnView ||
+        (currentRole === 'vendor'
+            ? 'sub-vendor-dash'
+            : 'sub-driver-dash');
+
+    currentChatDelivery = null;
 
     navigateApp('sub-chat');
 
-    const titleEl = elemento('chat-title');
-    const subEl = elemento('chat-subtitle');
     const messagesEl = elemento('chat-messages');
-
-    if (titleEl) {
-        titleEl.textContent = `Chat da entrega #${deliveryId.substring(0, 6)}`;
-    }
-
-    if (subEl) subEl.textContent = 'Carregando conversa...';
+    const titleEl = elemento('chat-title');
+    const subtitleEl = elemento('chat-subtitle');
 
     if (messagesEl) {
-        messagesEl.innerHTML = '<p class="chat-empty">Carregando mensagens...</p>';
+        messagesEl.innerHTML = `
+            <p class="chat-empty">Carregando mensagens...</p>
+        `;
     }
 
     try {
@@ -1718,188 +2320,210 @@ async function abrirChat(deliveryId) {
             .doc(deliveryId)
             .get();
 
-        if (currentChatDeliveryId !== deliveryId) return;
-
         if (!docSnap.exists) {
             throw new Error('Entrega não encontrada.');
         }
 
-        const dados = docSnap.data();
-
-        const ehEmpresa = dados.empresaId === currentUser.uid;
-        const ehEntregador = dados.entregadorId === currentUser.uid;
-
-        if (!ehEmpresa && !ehEntregador) {
-            throw new Error('Você não tem permissão para acessar esta conversa.');
-        }
-
         currentChatDelivery = {
             id: docSnap.id,
-            ...dados
+            ...docSnap.data()
         };
 
-        if (subEl) {
-            subEl.textContent = `Cliente: ${dados.cliente || 'Não informado'}`;
+        if (titleEl) {
+            titleEl.textContent =
+                `Conversa — ${currentChatDelivery.cliente || 'Entrega'}`;
         }
 
-        observarMensagensChat(deliveryId);
+        if (subtitleEl) {
+            subtitleEl.textContent =
+                `Empresa: ${currentChatDelivery.empresaNome || '-'} | Entregador: ${currentChatDelivery.entregadorNome || 'Aguardando'}`;
+        }
 
-        elemento('chat-title')?.focus();
+        const pertenceAoUsuario =
+            currentRole === 'vendor'
+                ? currentChatDelivery.empresaId === currentUser.uid
+                : currentChatDelivery.entregadorId === currentUser.uid;
+
+        if (!pertenceAoUsuario) {
+            throw new Error('Você não tem acesso a esta conversa.');
+        }
 
     } catch (error) {
-        console.error('Erro ao abrir chat:', error);
+        console.error('Erro ao carregar dados da entrega no chat:', error);
 
-        if (currentChatDeliveryId === deliveryId && messagesEl) {
+        if (messagesEl) {
             messagesEl.innerHTML = `
                 <p class="chat-empty">
-                    ${escaparHTML(error.message || 'Erro ao carregar a conversa.')}
+                    Não foi possível abrir esta conversa.
                 </p>
             `;
         }
-    }
-}
 
-// =====================================
-// OBSERVAR MENSAGENS
-// =====================================
+        exibirFeedback(
+            'app-feedback',
+            error.message || 'Não foi possível abrir a conversa.'
+        );
 
-function observarMensagensChat(deliveryId) {
-    if (chatUnsubscribe) {
-        pararListener(chatUnsubscribe);
-        chatUnsubscribe = null;
+        return;
     }
 
-    const messagesContainer = elemento('chat-messages');
-    if (!messagesContainer) return;
+    const chatIdAtual = deliveryId;
 
     chatUnsubscribe = db.collection('deliveries')
         .doc(deliveryId)
         .collection('messages')
         .orderBy('createdAt', 'asc')
         .onSnapshot(snapshot => {
-            if (currentChatDeliveryId !== deliveryId) return;
-
-            if (snapshot.empty) {
-                messagesContainer.innerHTML = `
-                    <p class="chat-empty">
-                        Nenhuma mensagem ainda. Inicie a conversa!
-                    </p>
-                `;
+            if (
+                currentChatDeliveryId !== chatIdAtual ||
+                !messagesEl
+            ) {
                 return;
             }
 
-            const mensagens = [];
+            if (snapshot.empty) {
+                messagesEl.innerHTML = `
+                    <p class="chat-empty">
+                        Nenhuma mensagem ainda. Envie a primeira mensagem.
+                    </p>
+                `;
 
-            snapshot.forEach(doc => {
-                mensagens.push(doc.data());
-            });
+                return;
+            }
 
-            messagesContainer.innerHTML = mensagens.map(msg => {
-                const mine = msg.senderId === currentUser.uid;
-                const cssClass = mine ? 'mine' : 'theirs';
+            messagesEl.innerHTML = snapshot.docs.map(doc => {
+                const msg = doc.data();
 
-                const timeStr = msg.createdAt?.toDate
-                    ? obterData(msg.createdAt)
-                    : 'Enviando...';
+                const isMine =
+                    msg.senderId === currentUser?.uid;
+
+                const hora =
+                    msg.createdAt &&
+                    typeof msg.createdAt.toDate === 'function'
+                        ? msg.createdAt.toDate().toLocaleTimeString(
+                            'pt-BR',
+                            {
+                                hour: '2-digit',
+                                minute: '2-digit'
+                            }
+                        )
+                        : '';
 
                 return `
-                    <div class="chat-message ${cssClass}">
+                    <div class="chat-message ${isMine ? 'mine' : 'theirs'}">
+
                         <span class="chat-message-author">
                             ${escaparHTML(msg.senderName || 'Usuário')}
                         </span>
 
-                        <p>${escaparHTML(msg.text || '')}</p>
+                        <p>
+                            ${escaparHTML(msg.text || '')}
+                        </p>
 
-                        <time>${escaparHTML(timeStr)}</time>
+                        <time>
+                            ${escaparHTML(hora)}
+                        </time>
+
                     </div>
                 `;
             }).join('');
 
-            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+            messagesEl.scrollTop = messagesEl.scrollHeight;
 
         }, error => {
-            console.error('Erro ao observar mensagens:', error);
+            console.error('Erro ao ouvir mensagens do chat:', error);
 
-            if (currentChatDeliveryId === deliveryId) {
-                messagesContainer.innerHTML = `
-                    <p class="chat-empty">
-                        Erro ao carregar mensagens.
-                    </p>
-                `;
-            }
+            exibirFeedback(
+                'app-feedback',
+                'Não foi possível atualizar as mensagens.'
+            );
         });
 }
 
+function fecharChat() {
+    pararListener(chatUnsubscribe);
+
+    chatUnsubscribe = null;
+    currentChatDeliveryId = null;
+    currentChatDelivery = null;
+
+    const destino = chatReturnView ||
+        (currentRole === 'vendor'
+            ? 'sub-vendor-dash'
+            : 'sub-driver-dash');
+
+    chatReturnView = null;
+
+    navigateApp(destino);
+}
+
 // =====================================
-// ENVIAR MENSAGEM
+// ENVIO DE MENSAGENS
 // =====================================
 
-const chatForm = elemento('chat-form');
+function iniciarChatForm() {
+    const chatForm = elemento('chat-form');
 
-if (chatForm) {
+    if (!chatForm || chatForm.dataset.initialized === 'true') {
+        return;
+    }
+
+    chatForm.dataset.initialized = 'true';
+
     chatForm.addEventListener('submit', async event => {
         event.preventDefault();
 
         if (
             chatSending ||
             !currentChatDeliveryId ||
-            !currentChatDelivery ||
             !usuarioAutenticado()
         ) {
             return;
         }
 
         const input = elemento('chat-input');
-        const sendButton = elemento('chat-send');
+        const texto = input?.value.trim() || '';
 
-        const mensagem = input?.value.trim() || '';
+        if (!texto) return;
 
-        if (!mensagem) {
-            input?.focus();
-            return;
-        }
-
-        if (mensagem.length > 2000) {
+        if (!currentChatDelivery) {
             exibirFeedback(
                 'app-feedback',
-                'A mensagem ultrapassa o limite de 2.000 caracteres.'
+                'Não foi possível identificar a entrega.'
             );
+
             return;
         }
-
-        const ehEmpresa =
-            currentChatDelivery.empresaId === currentUser.uid;
-
-        const ehEntregador =
-            currentChatDelivery.entregadorId === currentUser.uid;
-
-        if (!ehEmpresa && !ehEntregador) {
-            exibirFeedback(
-                'app-feedback',
-                'Você não tem permissão para enviar mensagens nesta conversa.'
-            );
-            return;
-        }
-
-        const deliveryId = currentChatDeliveryId;
 
         chatSending = true;
 
-        if (input) input.disabled = true;
-        if (sendButton) sendButton.disabled = true;
-
         try {
+            const deliveryId = currentChatDeliveryId;
+
+            const pertenceAoUsuario =
+                currentRole === 'vendor'
+                    ? currentChatDelivery.empresaId === currentUser.uid
+                    : currentChatDelivery.entregadorId === currentUser.uid;
+
+            if (!pertenceAoUsuario) {
+                throw new Error('Você não tem autorização para enviar mensagens.');
+            }
+
             await db.collection('deliveries')
                 .doc(deliveryId)
                 .collection('messages')
                 .add({
-                    text: mensagem,
                     senderId: currentUser.uid,
                     senderName: nomeUsuario(),
+                    senderRole: currentRole,
+                    text: texto,
                     createdAt: firebase.firestore.FieldValue.serverTimestamp()
                 });
 
-            if (currentChatDeliveryId === deliveryId && input) {
+            if (
+                input &&
+                currentChatDeliveryId === deliveryId
+            ) {
                 input.value = '';
             }
 
@@ -1908,46 +2532,13 @@ if (chatForm) {
 
             exibirFeedback(
                 'app-feedback',
-                'Não foi possível enviar a mensagem. Verifique sua conexão e permissões.'
+                error.message || 'Não foi possível enviar a mensagem.'
             );
 
         } finally {
             chatSending = false;
-
-            if (input) {
-                input.disabled = false;
-
-                if (currentChatDeliveryId === deliveryId) {
-                    input.focus();
-                }
-            }
-
-            if (sendButton) {
-                sendButton.disabled = false;
-            }
         }
     });
-}
-
-// =====================================
-// FECHAR CHAT
-// =====================================
-
-function fecharChat() {
-    if (chatUnsubscribe) {
-        pararListener(chatUnsubscribe);
-        chatUnsubscribe = null;
-    }
-
-    currentChatDeliveryId = null;
-    currentChatDelivery = null;
-
-    navigateApp(
-        chatReturnView ||
-        (currentRole === 'vendor'
-            ? 'sub-vendor-dash'
-            : 'sub-driver-dash')
-    );
 }
 
 // =====================================
@@ -1955,63 +2546,58 @@ function fecharChat() {
 // =====================================
 
 async function logout() {
+    limparMiniMapas();
+
+    pararObservacaoEntregas();
+    pararListener(historyUnsubscribe);
+    pararListener(chatUnsubscribe);
+
+    historyUnsubscribe = null;
+    chatUnsubscribe = null;
+
+    entregasEmpresaAtuais = [];
+    entregaAcompanhamentoId = null;
+
+    currentChatDeliveryId = null;
+    currentChatDelivery = null;
+    chatReturnView = null;
+
+    currentUser = null;
+    currentUserData = null;
+
+    closeMobileMenu();
+
     try {
-        pararObservacaoEntregas();
-        pararObservacaoHistorico();
-
-        if (chatUnsubscribe) {
-            pararListener(chatUnsubscribe);
-            chatUnsubscribe = null;
-        }
-
-        currentChatDeliveryId = null;
-        currentChatDelivery = null;
-        chatReturnView = null;
-
-        chatSending = false;
-        deliveryActionPending = false;
-
         await auth.signOut();
-
-        currentUser = null;
-        currentUserData = null;
-
-        const app = elemento('view-app');
-        const loginView = elemento('view-login');
-
-        if (app) app.hidden = true;
-
-        if (loginView) {
-            loginView.hidden = false;
-            loginView.classList.add('active');
-        }
-
-        const userName = elemento('user-name');
-
-        if (userName) {
-            userName.textContent = '';
-            userName.hidden = true;
-        }
-
-        const navList = elemento('nav-list');
-        if (navList) navList.innerHTML = '';
-
-        closeMobileMenu();
-        showAuthForm('login');
-
-        elemento('login-form')?.reset();
-
-        limparFeedback('auth-feedback');
-        limparFeedback('app-feedback');
-
-        elemento('login-email')?.focus();
-
     } catch (error) {
         console.error('Erro ao sair:', error);
 
         exibirFeedback(
-            'app-feedback',
-            'Não foi possível encerrar a sessão. Tente novamente.'
+            'auth-feedback',
+            'Não foi possível encerrar a sessão.'
         );
     }
+
+    const app = elemento('view-app');
+    const login = elemento('view-login');
+
+    if (app) app.hidden = true;
+    if (login) login.hidden = false;
+
+    showAuthForm('login');
 }
+
+// =====================================
+// INICIALIZAÇÃO
+// =====================================
+
+document.addEventListener('DOMContentLoaded', () => {
+    iniciarAutenticacao();
+    iniciarChatForm();
+
+    const backdrop = elemento('sidebar-backdrop');
+
+    if (backdrop) {
+        backdrop.addEventListener('click', closeMobileMenu);
+    }
+});
